@@ -44,6 +44,7 @@ function errorResponse(status: number, message: string): Response {
       source_url: null,
       media: null,
       downloads: [],
+      downloads_referer: null,
       task_endpoint: null,
     } satisfies PublicParseResponse,
     status,
@@ -108,6 +109,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       source_url: validatedUrl,
       media: null,
       downloads: [],
+      downloads_referer: null,
       task_endpoint: null,
     } satisfies PublicParseResponse);
   }
@@ -117,7 +119,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   // 如果希望视频流经 Worker 代理（比如某些 CDN 校验更严格），把 PROXY_DOWNLOADS 设为 "true"。
   const proxyDownloads = (env as any).PROXY_DOWNLOADS === "true";
   const baseUrl = (env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
-  const referer = douyinUrl(validatedUrl) ? "https://www.douyin.com/" : "https://www.bilibili.com/";
+  const downloadsReferer = douyinUrl(validatedUrl) ? "https://www.douyin.com/" : "https://www.bilibili.com/";
   const downloads: PublicDownloadItem[] = [];
   if (media.download_url) {
     downloads.push({
@@ -126,7 +128,6 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       url: proxyDownloads
         ? `${baseUrl}/api/media/download?url=${encodeURIComponent(media.download_url)}&filename=${encodeURIComponent(media.title || "视频")}`
         : media.download_url,
-      referer,
     });
   }
   for (const asset of media.assets) {
@@ -136,7 +137,6 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       url: proxyDownloads
         ? `${baseUrl}/api/media/download?url=${encodeURIComponent(asset.url)}&filename=${encodeURIComponent(asset.filename)}`
         : asset.url,
-      referer,
     });
   }
 
@@ -150,6 +150,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       source_url: validatedUrl,
       media,
       downloads: [],
+      downloads_referer: null,
       task_endpoint: baseUrl ? `${baseUrl}/api/tasks` : null,
     } satisfies PublicParseResponse);
   }
@@ -162,6 +163,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     source_url: validatedUrl,
     media,
     downloads,
+    downloads_referer: downloadsReferer,
     task_endpoint: baseUrl ? `${baseUrl}/api/tasks` : null,
   } satisfies PublicParseResponse);
 }

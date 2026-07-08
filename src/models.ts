@@ -36,8 +36,6 @@ export type PublicDownloadItem = {
   kind: "image" | "video";
   filename: string;
   url: string;
-  /** 下载此链接时应在 Referer 头里填的值，快捷指令直接用这个值即可。 */
-  referer: string;
 };
 
 export type PublicParseResponse = {
@@ -47,6 +45,8 @@ export type PublicParseResponse = {
   source_url: string | null;
   media: VideoInfo | null;
   downloads: PublicDownloadItem[];
+  /** 所有 downloads 项下载时都使用同一个 Referer，快捷指令取这个值加到 Header 里即可。 */
+  downloads_referer: string | null;
   task_endpoint: string | null;
   error?: string | null;
 };
