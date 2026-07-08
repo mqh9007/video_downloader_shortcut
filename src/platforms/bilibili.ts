@@ -68,36 +68,61 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await resp.json()) as T;
 }
 
-/** 获取播放信息，带 412 fallback 到 legacy 端点。 */
+/** 获取播放信息：多端点顺序 fallback（主 WBI / legacy / 外站）。 */
 async function fetchPlayInfo(bvid: string, cid: number): Promise<BiliPlayInfo> {
-  // 主接口（WBI 签名）—— Bilibili 从 2026-06 起对这个端点返回 412
+  const userCookie = "";
+
+  // 1) 主 WBI 端点
   const primaryUrl =
     `https://api.bilibili.com/x/player/wbi/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048&platform=html5`;
   const primaryResp = await fetchRaw(primaryUrl);
   if (primaryResp.ok) {
     const data = (await primaryResp.json()) as BiliPlayInfo;
     if (data.code === 0) return data;
-    // 业务错误（如需要登录/付费），直接抛
     if (data.code !== -412) {
-      throw new BilibiliError(`播放接口返回错误: ${data.message ?? "未知"} (code=${data.code})`);
+      throw new BilibiliError(`B站播放接口返回错误: ${data.message ?? "未知"} (code=${data.code})`);
     }
-    // code === -412：主接口业务级 412，回退
-  } else if (primaryResp.status !== 412) {
-    throw new BilibiliError(`Bilibili 接口 HTTP ${primaryResp.status}`);
   }
 
-  // 回退到 legacy 端点（fnval=4048 + try_look=1 是网页端回放常用的组合）
-  const fallbackUrl =
-    `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048&try_look=1`;
-  const fallbackResp = await fetchRaw(fallbackUrl);
-  if (!fallbackResp.ok) {
-    throw new BilibiliError(`Bilibili 播放接口 HTTP ${fallbackResp.status}（主接口 ${primaryResp.status}）`);
+  // 2) legacy 端点 + try_look（老接口，不强制 WBI）
+  const legacyUrl =
+    `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048&try_look=1&platform=html5`;
+  const legacyResp = await fetchRaw(legacyUrl);
+  if (legacyResp.ok) {
+    const data = (await legacyResp.json()) as BiliPlayInfo;
+    if (data.code === 0) return data;
   }
-  const data = (await fallbackResp.json()) as BiliPlayInfo;
-  if (data.code !== 0) {
-    throw new BilibiliError(`播放接口返回错误: ${data.message ?? "未知"} (code=${data.code})`);
+
+  // 3) 再试一次带 mobi_platform=android（移动端接口）
+  const mobileUrl =
+    `https://api.bilibili.com/x/player/wbi/playurl?bvid=${bvid}&cid=${cid}&qn=32&fnval=4048&platform=html5&mobi_platform=android`;
+  const mobileResp = await fetchRaw(mobileUrl);
+  if (mobileResp.ok) {
+    const data = (await mobileResp.json()) as BiliPlayInfo;
+    if (data.code === 0) return data;
   }
-  return data;
+
+  if (userCookie) {
+    // 4) 最后尝试带用户 cookie（如果你的 worker 有 cookie）
+    const cookieUrl =
+      `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048`;
+    const cookieResp = await fetch(cookieUrl, {
+      headers: {
+        "User-Agent": BILIBILI_UA,
+        Referer: "https://www.bilibili.com/",
+        Origin: "https://www.bilibili.com",
+        Cookie: userCookie,
+      },
+    });
+    if (cookieResp.ok) {
+      const data = (await cookieResp.json()) as BiliPlayInfo;
+      if (data.code === 0) return data;
+    }
+  }
+
+  throw new BilibiliError(
+    "B站播放地址获取失败（接口返回 412 或被风控）。该视频可能需要登录、大会员，或当前 IP 已被 B站风控。请稍后再试或换用个人 B站 Cookie。",
+  );
 }
 
 export async function extractBilibili(url: string): Promise<VideoInfo> {

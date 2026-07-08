@@ -7,7 +7,6 @@
 
 import { validatePublicUrl, HTTPError } from "./security";
 import type {
-  PublicParseRequest,
   PublicParseResponse,
   PublicDownloadItem,
   VideoInfo,
@@ -76,20 +75,43 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     }
   }
 
-  let payload: PublicParseRequest;
+  // 1) 先取原始 body，便于 fallback
+  const rawBody = await request.text();
+  let shareText: string | null = null;
+
+  // 2) 尝试标准 JSON 解析
   try {
-    payload = (await request.json()) as PublicParseRequest;
+    const parsed = JSON.parse(rawBody) as { text?: string };
+    if (parsed && typeof parsed.text === "string" && parsed.text.trim().length > 0) {
+      shareText = parsed.text;
+    }
   } catch {
-    return errorResponse(400, "请求体需要是 JSON");
+    // JSON 失败 → 尝试手工从原始文本提取 URL
+    const fallbackUrl =
+      rawBody.match(/https?:\/\/[^\s<>"']+/i)?.[0] ??
+      rawBody.match(/https?:\/\/[^\s]+/i)?.[0];
+    if (fallbackUrl) {
+      // 有链接：用去掉首尾非文本字符后的整段作为搜索文本
+      shareText = rawBody;
+    }
   }
-  if (!payload.text || typeof payload.text !== "string") {
-    return errorResponse(400, "缺少 text 字段");
+
+  // 3) 仍然没有：再试一次更宽松的 URL 提取
+  if (!shareText) {
+    const looseUrl = rawBody.match(/https?:\/\/[^\s]+/i)?.[0];
+    if (looseUrl) {
+      shareText = rawBody;
+    }
+  }
+
+  if (!shareText || shareText.trim().length === 0) {
+    return errorResponse(400, "请求体需要是 JSON（字段 text），或包含至少一个 http/https 链接");
   }
 
   // SSRF + 平台识别
   let validatedUrl: string;
   try {
-    validatedUrl = await validatePublicUrl(payload.text);
+    validatedUrl = await validatePublicUrl(shareText);
   } catch (exc) {
     if (exc instanceof HTTPError) return errorResponse(exc.status, exc.message);
     throw exc;

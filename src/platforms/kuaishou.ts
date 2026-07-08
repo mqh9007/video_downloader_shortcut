@@ -1,7 +1,9 @@
 /**
  * 快手解析模块。
- * 通过快手公开分享页 + video info 接口解析视频地址。
- * 参考自快手开放分享页结构（www.kuaishou.com/short-video/{id} 等）。
+ * 三层策略：
+ *   1) GraphQL API（visionVideoDetail）—— 需要 photoId + 正确参数
+ *   2) 分享页 HTML 抓取 window.__APOLLO_STATE__ GraphQL 缓存
+ *   3) 兜底：解析 HTML 中的 <video> / ld+json / og:video 标签
  */
 
 import type { VideoInfo } from "../models";
@@ -11,50 +13,11 @@ const KUAISHOU_UA =
 
 class KuaishouError extends Error {}
 
-interface KsGraphQLData {
-  visionVideoDetail?: {
-    photoId?: string;
-    photo?: {
-      id?: string;
-      duration?: number;
-      caption?: string;
-      coverUrl?: string;
-      photoUrl?: string;
-      videoResource?: {
-        adaptive?: { url?: string; hdrUrl?: string };
-        hd?: { url?: string };
-        ld?: { url?: string };
-        sd?: { url?: string };
-      };
-    };
-    author?: { name?: string; id?: string };
-  };
-  visionPlaylist?: {
-    playlistType?: string;
-    photos?: Array<{
-      id?: string;
-      photoUrl?: string;
-      coverUrl?: string;
-      caption?: string;
-      photoId?: string;
-      videoResource?: {
-        adaptive?: { url?: string; hdrUrl?: string };
-        hd?: { url?: string };
-        ld?: { url?: string };
-        sd?: { url?: string };
-      };
-    }>;
-    author?: { name?: string };
-    title?: string;
-  };
-}
-
 function extractPhotoId(url: string): string | null {
-  // 短链 v.kuaishou.com/XXXXX、www.kuaishou.com/f/XXXXX、www.kuaishou.com/short-video/XXXXX
-  const shortMatch = url.match(/v\.kuaishou\.com\/([A-Za-z0-9_-]+)/);
-  if (shortMatch) return shortMatch[1];
-  const idMatch = url.match(/kuaishou\.com\/(?:short-video|f)\/([A-Za-z0-9_-]+)/);
-  return idMatch?.[1] ?? null;
+  const m =
+    url.match(/v\.kuaishou\.com\/([A-Za-z0-9_-]+)/) ??
+    url.match(/kuaishou\.com\/(?:short-video|f|photo\/id|new-video)\/([A-Za-z0-9_-]+)/);
+  return m?.[1] ?? null;
 }
 
 async function followShortLink(url: string): Promise<string> {
@@ -69,92 +32,178 @@ async function followShortLink(url: string): Promise<string> {
   }
 }
 
-export async function extractKuaishou(url: string): Promise<VideoInfo> {
-  // 先尝试跟随短链，提取 photoId
-  const finalUrl = await followShortLink(url);
-  let photoId = extractPhotoId(finalUrl) ?? extractPhotoId(url);
-
-  // 如果 URL 里找不到 ID，尝试从分享页 HTML 抓 GraphQL 数据
-  let gqlData: KsGraphQLData | null = null;
-  if (!photoId) {
-    try {
-      const htmlResp = await fetch(finalUrl, { headers: { "User-Agent": KUAISHOU_UA } });
-      if (htmlResp.ok) {
-        const html = await htmlResp.text();
-        const jsonMatch = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{.*?\})(?:;|\n)/s);
-        if (jsonMatch) {
-          gqlData = JSON.parse(jsonMatch[1]);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  if (photoId) {
-    // km 官方 graphql
-    const gqlResp = await fetch(
-      `https://www.kuaishou.com/graphql`,
-      {
-        method: "POST",
-        headers: {
-          "User-Agent": KUAISHOU_UA,
-          "Content-Type": "application/json",
-          Referer: "https://www.kuaishou.com/",
-        },
-        body: JSON.stringify({
-          operationName: "visionVideoDetail",
-          query: "query visionVideoDetail($photoId: String, $type: String) { visionVideoDetail(photoId: $photoId, type: $type) { photo { id duration caption coverUrl photoUrl videoResource { adaptive { url } hd { url } ld { url } sd { url } } } author { name id } } }",
-          variables: { photoId, type: " VIDEO " },
-        }),
+/** 策略 1：GraphQL API */
+async function tryGraphQL(photoId: string): Promise<VideoInfo | null> {
+  try {
+    const resp = await fetch("https://www.kuaishou.com/graphql", {
+      method: "POST",
+      headers: {
+        "User-Agent": KUAISHOU_UA,
+        "Content-Type": "application/json",
+        Referer: `https://www.kuaishou.com/short-video/${photoId}`,
       },
-    );
-    if (gqlResp.ok) {
-      const result = (await gqlResp.json()) as { data?: KsGraphQLData };
-      gqlData = result.data ?? null;
-    }
+      body: JSON.stringify({
+        operationName: "visionVideoDetail",
+        query: `query visionVideoDetail($photoId: String, $type: String, $page: String, $webPageArea: String) {
+          visionVideoDetail(photoId: $photoId, type: $type, page: $page, webPageArea: $webPageArea) {
+            photo {
+              id duration caption coverUrl photoUrl
+              videoResource {
+                adaptive { url hdrUrl } hd { url } ld { url } sd { url }
+              }
+            }
+            author { name id }
+          }
+        }`,
+        variables: { photoId, type: "VIDEO", page: "search_instant", webPageArea: "brilliantSearch" },
+      }),
+    });
+    if (!resp.ok) return null;
+    const result = (await resp.json()) as any;
+    const photo = result?.data?.visionVideoDetail?.photo;
+    if (!photo) return null;
+
+    const vr = photo.videoResource;
+    const videoUrl =
+      vr?.adaptive?.url ?? vr?.adaptive?.hdrUrl ?? vr?.hd?.url ?? vr?.ld?.url ?? vr?.sd?.url;
+    const downloadUrl = videoUrl ?? photo.photoUrl;
+    if (!downloadUrl) return null;
+
+    return {
+      id: photo.id ?? photoId,
+      title: photo.caption ?? "快手作品",
+      uploader: photo.author?.name ?? null,
+      duration: typeof photo.duration === "number" ? photo.duration / 1000 : null,
+      thumbnail: photo.coverUrl ?? null,
+      webpage_url: `https://www.kuaishou.com/short-video/${photoId}`,
+      download_url: downloadUrl,
+      media_type: "video",
+      assets: [],
+      formats: [{ id: "default", label: "MP4 · 大小未知", ext: "mp4", height: null, filesize: null, has_audio: true }],
+    };
+  } catch {
+    return null;
   }
+}
 
-  if (!gqlData) throw new KuaishouError("无法解析快手作品信息");
+/** 策略 2：抓取分享页 HTML 中的 __APOLLO_STATE__ */
+async function tryHtmlApollo(url: string): Promise<VideoInfo | null> {
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": KUAISHOU_UA } });
+    if (!resp.ok) return null;
+    const html = await resp.text();
 
-  // 视频
-  const detailPhoto = gqlData.visionVideoDetail?.photo;
-  const listPhoto = gqlData.visionPlaylist?.photos?.[0];
-  const photo = detailPhoto ?? listPhoto;
-  if (!photo) throw new KuaishouError("快手作品数据为空");
+    const apolloMatch = html.match(/window\.__APOLLO_STATE__\s*=\s*(\{.*?\})\s*(?:<\/script>|\n)/s);
+    if (!apolloMatch) return null;
 
-  const vr = photo.videoResource;
-  const videoUrl =
-    vr?.adaptive?.url ?? vr?.adaptive?.hdrUrl ?? vr?.hd?.url ?? vr?.ld?.url ?? vr?.sd?.url;
-  const photoUrl = photo.photoUrl;
-  const downloadUrl = videoUrl ?? photoUrl;
+    const data = JSON.parse(apolloMatch[1]) as Record<string, any>;
+    const graphPayloads = Object.values(data).filter(
+      (v: any) => v && typeof v === "object" && ("photo" in v || "photos" in v || "photoId" in v),
+    );
 
-  if (!downloadUrl) throw new KuaishouError("无法获取快手视频下载地址");
+    for (const payload of graphPayloads) {
+      const photo = (payload as any).photo ?? (payload as any).photos?.[0];
+      if (!photo) continue;
+      const vr = (photo as any).videoResource;
+      const videoUrl =
+        vr?.adaptive?.url ?? vr?.adaptive?.hdrUrl ?? vr?.hd?.url ?? vr?.ld?.url ?? vr?.sd?.url;
+      const downloadUrl = videoUrl ?? (photo as any).photoUrl;
+      if (!downloadUrl) continue;
 
-  const author = gqlData.visionVideoDetail?.author ?? gqlData.visionPlaylist?.author;
-  const title = photo.caption ?? gqlData.visionPlaylist?.title ?? "快手作品";
-  const id = "id" in photo ? photo.id : ("photoId" in photo ? photo.photoId : undefined);
-  const dur = "duration" in photo ? photo.duration : undefined;
+      return {
+        id: (photo as any).id ?? (photo as any).photoId ?? "",
+        title: (photo as any).caption ?? "快手作品",
+        uploader: (payload as any).author?.name ?? null,
+        duration: typeof (photo as any).duration === "number" ? (photo as any).duration / 1000 : null,
+        thumbnail: (photo as any).coverUrl ?? null,
+        webpage_url: url,
+        download_url: downloadUrl,
+        media_type: "video",
+        assets: [],
+        formats: [{ id: "default", label: "MP4 · 大小未知", ext: "mp4", height: null, filesize: null, has_audio: true }],
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** 策略 3：从 HTML 中直接提取 <video src> / ld+json / og:video */
+async function tryHtmlScrape(url: string): Promise<VideoInfo | null> {
+  try {
+    const resp = await fetch(url, { headers: { "User-Agent": KUAISHOU_UA } });
+    if (!resp.ok) return null;
+    const html = await resp.text();
+
+    // A) <video src="...">
+    const videoMatch = html.match(/<video[^>]+src\s*=\s*["']([^"']+\.(?:mp4|m3u8|mov))["']/i);
+    if (videoMatch) {
+      return buildFromUrl(url, videoMatch[1], html);
+    }
+
+    // B) application/ld+json 中 encoding.contentUrl / thumbnailUrl / name
+    const ldMatch = html.match(/"@type"\s*:\s*"VideoObject"[\s\S]*?"contentUrl"\s*:\s*"([^"]+)"/i);
+    if (ldMatch) {
+      return buildFromUrl(url, ldMatch[1], html);
+    }
+
+    // C) og:video / video:secure_url
+    const ogMatch = html.match(/<meta[^>]+(?:name|property)="(?:og:video|video:secure_url)"[^>]+content="([^"]+)"/i);
+    if (ogMatch) {
+      return buildFromUrl(url, ogMatch[1], html);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildFromUrl(pageUrl: string, downloadUrl: string, html: string): VideoInfo {
+  // 抓 title / thumbnail / description
+  const titleMatch =
+    html.match(/<meta[^>]+name="title"[^>]+content="([^"]+)"/i) ??
+    html.match(/<meta[^>]+property="og:title"[^>]+content="([^"]+)"/i) ??
+    html.match(/<title>([^<]+)<\/title>/i);
+  const thumbMatch =
+    html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/i) ??
+    html.match(/<meta[^>]+name="og:image"[^>]+content="([^"]+)"/i);
 
   return {
-    id: id ?? "",
-    title,
-    uploader: author?.name ?? null,
-    duration: typeof dur === "number" ? dur / 1000 : null,
-    thumbnail: photo.coverUrl ?? null,
-    webpage_url: url,
+    id: "",
+    title: titleMatch?.[1]?.trim() ?? "快手作品",
+    uploader: null,
+    duration: null,
+    thumbnail: thumbMatch?.[1] ?? null,
+    webpage_url: pageUrl,
     download_url: downloadUrl,
     media_type: "video",
     assets: [],
-    formats: [
-      {
-        id: "default",
-        label: `MP4 · 大小未知`,
-        ext: downloadUrl.includes(".mp4") ? "mp4" : "video",
-        height: null,
-        filesize: null,
-        has_audio: true,
-      },
-    ],
+    formats: [{ id: "default", label: "MP4 · 大小未知", ext: "mp4", height: null, filesize: null, has_audio: true }],
   };
+}
+
+export async function extractKuaishou(url: string): Promise<VideoInfo> {
+  const finalUrl = await followShortLink(url);
+  const photoId = extractPhotoId(finalUrl) ?? extractPhotoId(url);
+
+  // 按序尝试三种策略
+  if (photoId) {
+    const r1 = await tryGraphQL(photoId);
+    if (r1) return r1;
+    const r2 = await tryHtmlApollo(finalUrl);
+    if (r2) return r2;
+    const r3 = await tryHtmlScrape(finalUrl);
+    if (r3) return r3;
+  } else {
+    const r4 = await tryHtmlApollo(finalUrl);
+    if (r4) return r4;
+    const r5 = await tryHtmlScrape(finalUrl);
+    if (r5) return r5;
+  }
+
+  throw new KuaishouError(
+    "无法解析快手作品信息，请检查链接是否有效，或该作品需要登录/已删除。",
+  );
 }
