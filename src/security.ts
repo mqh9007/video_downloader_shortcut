@@ -79,12 +79,24 @@ export async function validatePublicUrl(input: string): Promise<string> {
   if (protocol !== 'http:' && protocol !== 'https:') {
     throw new HTTPError(400, '只支持 HTTP/HTTPS 链接');
   }
+  // 已知短链接域名：跳过 DNS 预校验，跟随重定向后由业务逻辑再次校验最终落地地址。
+  const shortLinkDomains = new Set([
+    'v.douyin.com',
+    'www.douyin.com',
+    'm.douyin.com',
+    'b23.tv',
+    'www.bilibili.com',
+    'm.bilibili.com',
+    'bili2.cn',
+  ]);
   if (/^[\d.]+$/.test(hostname) || hostname.includes(':')) {
     if (!isPublicIp(hostname)) throw new HTTPError(400, '不允许访问内网地址');
     return url;
   }
-  const addresses = await resolveHostname(hostname);
-  if (addresses.length === 0) throw new HTTPError(400, '无法解析该域名');
-  if (!addresses.every(isPublicIp)) throw new HTTPError(400, '链接目标不是公网地址');
+  if (!shortLinkDomains.has(hostname)) {
+    const addresses = await resolveHostname(hostname);
+    if (addresses.length === 0) throw new HTTPError(400, '无法解析该域名');
+    if (!addresses.every(isPublicIp)) throw new HTTPError(400, '链接目标不是公网地址');
+  }
   return url;
 }
