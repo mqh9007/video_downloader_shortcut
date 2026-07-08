@@ -1,6 +1,7 @@
 /**
  * Bilibili 解析模块：通过 bilibili.wbi 公开接口获取播放地址。
- * 适配自原项目 _site_options 逻辑（带 Referer）。
+ * 适配自原项目 _site_options 逻辑（带 Referer），
+ * 含 HTTP 412 回退到 legacy 端点（与 douyin_fallback.py 同源策略）。
  */
 
 import type { VideoFormat, VideoInfo } from "../models";
@@ -49,7 +50,7 @@ async function extractBvid(url: string): Promise<string | null> {
   return match?.[1] ?? null;
 }
 
-async function fetchJson<T>(url: string): Promise<T> {
+async function fetchRaw(url: string): Promise<Response> {
   const resp = await fetch(url, {
     headers: {
       "User-Agent": BILIBILI_UA,
@@ -58,20 +59,55 @@ async function fetchJson<T>(url: string): Promise<T> {
       "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     },
   });
+  return resp;
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const resp = await fetchRaw(url);
   if (!resp.ok) throw new BilibiliError(`Bilibili 接口 HTTP ${resp.status}`);
   return (await resp.json()) as T;
+}
+
+/** 获取播放信息，带 412 fallback 到 legacy 端点。 */
+async function fetchPlayInfo(bvid: string, cid: number): Promise<BiliPlayInfo> {
+  // 主接口（WBI 签名）—— Bilibili 从 2026-06 起对这个端点返回 412
+  const primaryUrl =
+    `https://api.bilibili.com/x/player/wbi/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048&platform=html5`;
+  const primaryResp = await fetchRaw(primaryUrl);
+  if (primaryResp.ok) {
+    const data = (await primaryResp.json()) as BiliPlayInfo;
+    if (data.code === 0) return data;
+    // 业务错误（如需要登录/付费），直接抛
+    if (data.code !== -412) {
+      throw new BilibiliError(`播放接口返回错误: ${data.message ?? "未知"} (code=${data.code})`);
+    }
+    // code === -412：主接口业务级 412，回退
+  } else if (primaryResp.status !== 412) {
+    throw new BilibiliError(`Bilibili 接口 HTTP ${primaryResp.status}`);
+  }
+
+  // 回退到 legacy 端点（fnval=4048 + try_look=1 是网页端回放常用的组合）
+  const fallbackUrl =
+    `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=4048&try_look=1`;
+  const fallbackResp = await fetchRaw(fallbackUrl);
+  if (!fallbackResp.ok) {
+    throw new BilibiliError(`Bilibili 播放接口 HTTP ${fallbackResp.status}（主接口 ${primaryResp.status}）`);
+  }
+  const data = (await fallbackResp.json()) as BiliPlayInfo;
+  if (data.code !== 0) {
+    throw new BilibiliError(`播放接口返回错误: ${data.message ?? "未知"} (code=${data.code})`);
+  }
+  return data;
 }
 
 export async function extractBilibili(url: string): Promise<VideoInfo> {
   const bvid = await extractBvid(url);
   if (!bvid) throw new BilibiliError("无法从链接中识别 BVID");
 
-  // 视频基础信息
   const info = await fetchJson<BiliVideoInfo>(
     `https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`,
   );
 
-  // 通过 pagelist 取 cid
   let cid = 0;
   try {
     const pagelist = await fetchJson<{ data?: { cid: number }[] }>(
@@ -91,28 +127,22 @@ export async function extractBilibili(url: string): Promise<VideoInfo> {
       // ignore
     }
   }
-
-  // 播放信息
   if (!cid) throw new BilibiliError("无法获取视频的 CID");
 
-  const playInfo = await fetchJson<BiliPlayInfo>(
-    `https://api.bilibili.com/x/player/playurl?bvid=${bvid}&cid=${cid}&qn=112&fnval=1`,
-  );
-  if (playInfo.code !== 0) throw new BilibiliError(`播放接口返回错误: ${playInfo.message ?? "未知"}`);
+  const playInfo = await fetchPlayInfo(bvid, cid);
   const data = playInfo.data;
   if (!data) throw new BilibiliError("Bilibili 播放数据为空");
 
   let downloadUrl: string | null = null;
   const formats: VideoFormat[] = [];
 
-  // 优先 DASH 视频轨
   if (data.dash?.video?.length) {
     const sorted = [...data.dash.video].sort(
       (a, b) => (b.height ?? 0) - (a.height ?? 0) || (b.bandwidth ?? 0) - (a.bandwidth ?? 0),
     );
     for (const vid of sorted.slice(0, 4)) {
-      const url = vid.base_url || vid.backup_url?.[0];
-      if (!url) continue;
+      const u = vid.base_url || vid.backup_url?.[0];
+      if (!u) continue;
       const quality = vid.height ? `${vid.height}p` : "未知画质";
       formats.push({
         id: String(vid.id),
@@ -122,11 +152,10 @@ export async function extractBilibili(url: string): Promise<VideoInfo> {
         filesize: null,
         has_audio: false,
       });
-      downloadUrl ??= url;
+      downloadUrl ??= u;
     }
   }
 
-  // 回退到 durl（旧接口，自带音频）
   if (!downloadUrl && data.durl?.length) {
     const first = data.durl[0];
     if (first?.url) {

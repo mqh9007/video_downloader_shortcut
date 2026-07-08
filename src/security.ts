@@ -88,6 +88,10 @@ export async function validatePublicUrl(input: string): Promise<string> {
     'www.bilibili.com',
     'm.bilibili.com',
     'bili2.cn',
+    'v.kuaishou.com',
+    'www.kuaishou.com',
+    'm.kuaishou.com',
+    'live.kuaishou.com',
   ]);
   if (/^[\d.]+$/.test(hostname) || hostname.includes(':')) {
     if (!isPublicIp(hostname)) throw new HTTPError(400, '不允许访问内网地址');

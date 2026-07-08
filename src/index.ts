@@ -14,6 +14,7 @@ import type {
 } from "./models";
 import { extractDouyin } from "./platforms/douyin";
 import { extractBilibili } from "./platforms/bilibili";
+import { extractKuaishou } from "./platforms/kuaishou";
 
 export interface Env {
   PUBLIC_BASE_URL?: string;
@@ -60,6 +61,11 @@ function bilibiliUrl(url: string): boolean {
   return h === "bilibili.com" || h.endsWith(".bilibili.com") || h === "b23.tv" || h.endsWith(".b23.tv");
 }
 
+function kuaishouUrl(url: string): boolean {
+  const h = new URL(url).hostname.toLowerCase();
+  return h === "kuaishou.com" || h.endsWith(".kuaishou.com") || h === "v.kuaishou.com" || h === "m.kuaishou.com" || h === "www.kuaishou.com";
+}
+
 async function handleShortcutParse(request: Request, env: Env): Promise<Response> {
   // API Key 校验
   const expectedKey = env.PUBLIC_API_KEY;
@@ -96,8 +102,10 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       media = await extractDouyin(validatedUrl, env.DOUYIN_COOKIE ?? "");
     } else if (bilibiliUrl(validatedUrl)) {
       media = await extractBilibili(validatedUrl);
+    } else if (kuaishouUrl(validatedUrl)) {
+      media = await extractKuaishou(validatedUrl);
     } else {
-      return errorResponse(400, "目前只支持抖音和 Bilibili 的分享链接");
+      return errorResponse(400, "目前只支持抖音、Bilibili、快手的分享链接");
     }
   } catch (exc) {
     const msg = exc instanceof Error ? exc.message : "解析失败，请稍后重试";
@@ -119,7 +127,12 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   // 如果希望视频流经 Worker 代理（比如某些 CDN 校验更严格），把 PROXY_DOWNLOADS 设为 "true"。
   const proxyDownloads = (env as any).PROXY_DOWNLOADS === "true";
   const baseUrl = (env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
-  const downloadsReferer = douyinUrl(validatedUrl) ? "https://www.douyin.com/" : "https://www.bilibili.com/";
+  let downloadsReferer = "https://www.bilibili.com/";
+  if (douyinUrl(validatedUrl)) {
+    downloadsReferer = "https://www.douyin.com/";
+  } else if (kuaishouUrl(validatedUrl)) {
+    downloadsReferer = "https://www.kuaishou.com/";
+  }
   const downloads: PublicDownloadItem[] = [];
   if (media.download_url) {
     downloads.push({
