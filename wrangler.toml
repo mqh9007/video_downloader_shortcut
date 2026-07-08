@@ -1,0 +1,23 @@
+name = "reelfetch-shortcut"
+main = "src/index.ts"
+compatibility_date = "2025-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 环境变量（生产部署时用 `wrangler secret put` 设置）
+[vars]
+# 公开 API 的 Base URL（生成代理下载链接用），例如 https://your-worker.example.com
+PUBLIC_BASE_URL = "http://localhost:8787"
+# 抖音 Cookie（可选，有值时走 Detail API 获取高清实况）
+DOUYIN_COOKIE = ""
+# API 密钥（可选，留空表示不校验）
+PUBLIC_API_KEY = ""
+
+# 如果要代理下载流量（视频流经 Worker），取消下面注释
+# 注意：会产生大量出口流量，按需开启
+# [[rules]]
+#   type = "ESModule"
+#   globs = ["**/*.ts"]
+
+# 日志
+[observability]
+enabled = true
