@@ -121,9 +121,12 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   let media: VideoInfo;
   let cookieValid: boolean | undefined;
   let cookieDiagnosis: string | undefined;
+  let cookieConfigured = false;
   try {
     if (douyinUrl(validatedUrl)) {
-      const dr = await extractDouyin(validatedUrl, env.DOUYIN_COOKIE ?? "");
+      const cookie = env.DOUYIN_COOKIE ?? "";
+      cookieConfigured = cookie.length > 0;
+      const dr = await extractDouyin(validatedUrl, cookie);
       media = dr.info;
       cookieValid = dr.cookieValid;
       cookieDiagnosis = dr.diagnosis;
@@ -198,8 +201,8 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   const summary = downloadSummary(downloads);
   return json({
     success: true,
-    message: buildMessage(summary, cookieValid, cookieDiagnosis),
-    notification: buildNotification(summary, cookieValid, cookieDiagnosis),
+    message: buildMessage(summary, cookieValid, cookieDiagnosis, cookieConfigured),
+    notification: buildNotification(summary, cookieValid, cookieDiagnosis, cookieConfigured),
     source_url: validatedUrl,
     media,
     downloads,
@@ -208,7 +211,10 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   } satisfies PublicParseResponse);
 }
 
-function buildMessage(summary: string, cookieValid?: boolean, diagnosis?: string): string {
+function buildMessage(summary: string, cookieValid?: boolean, diagnosis?: string, cookieConfigured?: boolean): string {
+  if (cookieConfigured === false) {
+    return `${summary}（未配置抖音 Cookie，仅获取到低画质。设置 DOUYIN_COOKIE 环境变量可获取高清）`;
+  }
   if (cookieValid === false) {
     const extra = diagnosis ? ` [${diagnosis}]` : "";
     return `${summary}（抖音 Cookie 已失效${extra}，请更新环境变量 DOUYIN_COOKIE）`;
@@ -216,7 +222,10 @@ function buildMessage(summary: string, cookieValid?: boolean, diagnosis?: string
   return summary;
 }
 
-function buildNotification(summary: string, cookieValid?: boolean, diagnosis?: string): string {
+function buildNotification(summary: string, cookieValid?: boolean, diagnosis?: string, cookieConfigured?: boolean): string {
+  if (cookieConfigured === false) {
+    return `${summary} · 未配置抖音 Cookie（设置 DOUYIN_COOKIE 获取高清）`;
+  }
   if (cookieValid === true) {
     return `${summary} · Cookie 有效`;
   }
