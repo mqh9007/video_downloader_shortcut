@@ -208,15 +208,59 @@ async function fetchDetail(
     };
   }
 
-  // 2) 普通视频：从 video.play_addr 提取最高画质（url_list 最后一个是无水印高清）
+  // 2) 普通视频：从 video 提取最高画质
   const video = item.video;
   if (typeof video === "object" && video !== null) {
-    const playAddr = video.play_addr;
-    if (playAddr && Array.isArray(playAddr.url_list) && playAddr.url_list.length > 0) {
-      // url_list[0] 通常是低画质，最后一个最高画质
-      let downloadUrl = playAddr.url_list[playAddr.url_list.length - 1];
-      downloadUrl = normalizeVideoUrl(downloadUrl);
+    let downloadUrl: string | null = null;
+    let height: number | null = null;
+    let width: number | null = null;
 
+    // 优先：bit_rate 数组（包含多画质，按 bit_rate 排序取最高）
+    const bitRates = video.bit_rate;
+    if (Array.isArray(bitRates) && bitRates.length > 0) {
+      const candidates: { bitRate: number; url: string; h: number; w: number }[] = [];
+      for (const br of bitRates) {
+        if (typeof br !== "object" || br === null) continue;
+        const playAddr = (br as any).play_addr;
+        const urls = playAddr?.url_list;
+        if (Array.isArray(urls) && urls.length > 0) {
+          candidates.push({
+            bitRate: Number((br as any).bit_rate) || 0,
+            url: urls[0],
+            h: Number(playAddr?.height) || 0,
+            w: Number(playAddr?.width) || 0,
+          });
+        }
+      }
+      if (candidates.length > 0) {
+        const best = candidates.reduce((a, b) => (b.bitRate > a.bitRate ? b : a));
+        downloadUrl = normalizeVideoUrl(best.url);
+        height = best.h || null;
+        width = best.w || null;
+      }
+    }
+
+    // 回退：download_addr（无水印下载地址）
+    if (!downloadUrl) {
+      const dlAddr = video.download_addr;
+      if (dlAddr && Array.isArray(dlAddr.url_list) && dlAddr.url_list.length > 0) {
+        downloadUrl = normalizeVideoUrl(dlAddr.url_list[0]);
+        height = Number(dlAddr.height) || null;
+        width = Number(dlAddr.width) || null;
+      }
+    }
+
+    // 再回退：play_addr（默认画质）
+    if (!downloadUrl) {
+      const playAddr = video.play_addr;
+      if (playAddr && Array.isArray(playAddr.url_list) && playAddr.url_list.length > 0) {
+        downloadUrl = normalizeVideoUrl(playAddr.url_list[playAddr.url_list.length - 1]);
+        height = Number(playAddr.height) || null;
+        width = Number(playAddr.width) || null;
+      }
+    }
+
+    if (downloadUrl) {
       // 封面：优先 origin_cover（无水印），再 cover
       const originCover = video.origin_cover;
       const thumb = Array.isArray(originCover?.url_list) && originCover.url_list.length > 0
@@ -230,8 +274,6 @@ async function fetchDetail(
 
       const durationMs = video.duration;
       const duration = typeof durationMs === "number" ? durationMs / 1000 : null;
-      const height = typeof video.height === "number" ? video.height : null;
-      const width = typeof video.width === "number" ? video.width : null;
       const quality = width && height ? `${width}×${height}` : "最佳画质";
 
       return {
