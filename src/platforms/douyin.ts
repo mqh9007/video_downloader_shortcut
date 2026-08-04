@@ -159,12 +159,18 @@ function extractDetailAssets(item: Record<string, unknown>): MediaAsset[] {
   return assets;
 }
 
+interface DetailResult {
+  info: VideoInfo | null;
+  /** cookie 是否有效：true=有效，false=无效/过期，undefined=未使用 cookie */
+  cookieValid?: boolean;
+}
+
 async function fetchDetail(
   awemeId: string,
   sourceUrl: string,
   cookie: string,
-): Promise<VideoInfo | null> {
-  if (!cookie) return null;
+): Promise<DetailResult> {
+  if (!cookie) return { info: null };
   const headers: HeadersInit = {
     Accept: "*/*",
     "User-Agent": BROWSER_UA,
@@ -174,37 +180,51 @@ async function fetchDetail(
   let data: any;
   try {
     const resp = await fetch(detailApiUrl(awemeId), { headers });
-    if (!resp.ok) return null;
+    if (!resp.ok) return { info: null, cookieValid: false };
     data = await resp.json();
   } catch {
-    return null;
+    return { info: null, cookieValid: false };
   }
-  const item = data?.aweme_detail;
-  if (typeof item !== "object" || item === null) return null;
+
+  // 检测 cookie 是否有效：
+  // - data.status_code !== 0 通常是登录失效
+  // - data.aweme_detail 为空表示未返回数据（cookie 失效常见表现）
+  const statusOk = data?.status_code === 0;
+  const hasDetail = data && typeof data.aweme_detail === "object" && data.aweme_detail !== null;
+  const cookieValid = statusOk && hasDetail;
+
+  if (!cookieValid) {
+    return { info: null, cookieValid: false };
+  }
+
+  const item = data.aweme_detail;
 
   // 1) 图文/实况：走 assets 提取
   const assets = extractDetailAssets(item);
   if (assets.length > 0 && assets.some((a) => a.kind === "video")) {
     const firstImage = assets.find((a) => a.kind === "image")?.url ?? null;
     return {
-      id: String(item.aweme_id ?? awemeId),
-      title: item.desc || "抖音图文作品",
-      uploader: item.author?.nickname ?? null,
-      duration: null,
-      thumbnail: firstImage,
-      webpage_url: sourceUrl,
-      media_type: "gallery",
-      assets,
-      formats: [
-        {
-          id: "gallery",
-          label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片 · ${assets.filter((a) => a.kind === "video").length} 个实况视频`,
-          ext: "zip",
-          height: null,
-          filesize: null,
-          has_audio: false,
-        },
-      ],
+      info: {
+        id: String(item.aweme_id ?? awemeId),
+        title: item.desc || "抖音图文作品",
+        uploader: item.author?.nickname ?? null,
+        duration: null,
+        thumbnail: firstImage,
+        webpage_url: sourceUrl,
+        media_type: "gallery",
+        assets,
+        formats: [
+          {
+            id: "gallery",
+            label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片 · ${assets.filter((a) => a.kind === "video").length} 个实况视频`,
+            ext: "zip",
+            height: null,
+            filesize: null,
+            has_audio: false,
+          },
+        ],
+      },
+      cookieValid: true,
     };
   }
 
@@ -277,30 +297,33 @@ async function fetchDetail(
       const quality = width && height ? `${width}×${height}` : "最佳画质";
 
       return {
-        id: String(item.aweme_id ?? awemeId),
-        title: item.desc || "抖音视频",
-        uploader: item.author?.nickname ?? null,
-        duration,
-        thumbnail,
-        webpage_url: sourceUrl,
-        download_url: downloadUrl,
-        media_type: "video",
-        assets: [],
-        formats: [
-          {
-            id: "detail_hd",
-            label: `${quality} · MP4 · 无水印高清`,
-            ext: "mp4",
-            height,
-            filesize: null,
-            has_audio: true,
-          },
-        ],
+        info: {
+          id: String(item.aweme_id ?? awemeId),
+          title: item.desc || "抖音视频",
+          uploader: item.author?.nickname ?? null,
+          duration,
+          thumbnail,
+          webpage_url: sourceUrl,
+          download_url: downloadUrl,
+          media_type: "video",
+          assets: [],
+          formats: [
+            {
+              id: "detail_hd",
+              label: `${quality} · MP4 · 无水印高清`,
+              ext: "mp4",
+              height,
+              filesize: null,
+              has_audio: true,
+            },
+          ],
+        },
+        cookieValid: true,
       };
     }
   }
 
-  return null;
+  return { info: null, cookieValid: true };
 }
 
 function parseRouterData(html: string, sourceUrl: string): VideoInfo {
@@ -398,9 +421,11 @@ function parseRouterData(html: string, sourceUrl: string): VideoInfo {
   };
 }
 
-/** 解析抖音分享链接或短链，返回 VideoInfo。 */
-export async function extractDouyin(url: string, cookie: string): Promise<VideoInfo> {
-  // 先把短链 follow 一下，拿到 aweme_id
+/** 解析抖音分享链接或短链，返回 VideoInfo + cookie 有效性。 */
+export async function extractDouyin(
+  url: string,
+  cookie: string,
+): Promise<{ info: VideoInfo; cookieValid?: boolean }> {
   let finalUrl = url;
   try {
     const resp = await fetch(url, {
@@ -417,7 +442,10 @@ export async function extractDouyin(url: string, cookie: string): Promise<VideoI
 
   // 优先走 detail API
   const detail = await fetchDetail(videoId, url, cookie);
-  if (detail) return detail;
+  if (detail.info) return { info: detail.info, cookieValid: detail.cookieValid };
+
+  // 记录 cookie 有效性（用于主流程通知）
+  const cookieValid = detail.cookieValid;
 
   // fallback：公开分享页
   const workTypeMatch = finalUrl.match(/\/(video|note|slides)\//);
@@ -426,5 +454,5 @@ export async function extractDouyin(url: string, cookie: string): Promise<VideoI
   const resp = await fetch(shareUrl, { headers: { "User-Agent": MOBILE_UA } });
   if (!resp.ok) throw new DouyinError("抖音公开分享页访问失败");
   const html = await resp.text();
-  return parseRouterData(html, url);
+  return { info: parseRouterData(html, url), cookieValid };
 }

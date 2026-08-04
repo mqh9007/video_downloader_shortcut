@@ -119,9 +119,12 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
 
   // 分平台抓取
   let media: VideoInfo;
+  let cookieValid: boolean | undefined;
   try {
     if (douyinUrl(validatedUrl)) {
-      media = await extractDouyin(validatedUrl, env.DOUYIN_COOKIE ?? "");
+      const dr = await extractDouyin(validatedUrl, env.DOUYIN_COOKIE ?? "");
+      media = dr.info;
+      cookieValid = dr.cookieValid;
     } else if (bilibiliUrl(validatedUrl)) {
       media = await extractBilibili(validatedUrl);
     } else if (kuaishouUrl(validatedUrl)) {
@@ -180,7 +183,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     return json({
       success: false,
       message: msg,
-      notification: msg,
+      notification: buildNotification(msg, cookieValid),
       error: msg,
       source_url: validatedUrl,
       media,
@@ -193,14 +196,33 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   const summary = downloadSummary(downloads);
   return json({
     success: true,
-    message: summary,
-    notification: summary,
+    message: buildMessage(summary, cookieValid),
+    notification: buildNotification(summary, cookieValid),
     source_url: validatedUrl,
     media,
     downloads,
     downloads_referer: downloadsReferer,
     task_endpoint: baseUrl ? `${baseUrl}/api/tasks` : null,
   } satisfies PublicParseResponse);
+}
+
+/** cookie 无效时追加到 message；有效时不追加。 */
+function buildMessage(summary: string, cookieValid?: boolean): string {
+  if (cookieValid === false) {
+    return `${summary}（抖音 Cookie 已失效，请更新环境变量 DOUYIN_COOKIE）`;
+  }
+  return summary;
+}
+
+/** notification 始终带上 cookie 状态。 */
+function buildNotification(summary: string, cookieValid?: boolean): string {
+  if (cookieValid === true) {
+    return `${summary} · Cookie 有效`;
+  }
+  if (cookieValid === false) {
+    return `${summary} · 抖音 Cookie 已失效，请更新环境变量 DOUYIN_COOKIE`;
+  }
+  return summary;
 }
 
 function downloadSummary(downloads: PublicDownloadItem[]): string {
