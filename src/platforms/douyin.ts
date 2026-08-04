@@ -163,6 +163,8 @@ interface DetailResult {
   info: VideoInfo | null;
   /** cookie 是否有效：true=有效，false=无效/过期，undefined=未使用 cookie */
   cookieValid?: boolean;
+  /** 诊断信息：cookie 无效时的原因 */
+  diagnosis?: string;
 }
 
 async function fetchDetail(
@@ -194,7 +196,11 @@ async function fetchDetail(
   const cookieValid = statusOk && hasDetail;
 
   if (!cookieValid) {
-    return { info: null, cookieValid: false };
+    // 诊断信息：把 status_code 和 aweme_detail 存在性带出去，便于排查
+    const reason = !statusOk
+      ? `status_code=${data?.status_code ?? "?"}`
+      : `aweme_detail=${hasDetail ? "present" : "missing"}`;
+    return { info: null, cookieValid: false, diagnosis: reason };
   }
 
   const item = data.aweme_detail;
@@ -425,7 +431,7 @@ function parseRouterData(html: string, sourceUrl: string): VideoInfo {
 export async function extractDouyin(
   url: string,
   cookie: string,
-): Promise<{ info: VideoInfo; cookieValid?: boolean }> {
+): Promise<{ info: VideoInfo; cookieValid?: boolean; diagnosis?: string }> {
   let finalUrl = url;
   try {
     const resp = await fetch(url, {
@@ -444,8 +450,9 @@ export async function extractDouyin(
   const detail = await fetchDetail(videoId, url, cookie);
   if (detail.info) return { info: detail.info, cookieValid: detail.cookieValid };
 
-  // 记录 cookie 有效性（用于主流程通知）
+  // 记录 cookie 有效性 + 诊断信息（用于主流程通知）
   const cookieValid = detail.cookieValid;
+  const diagnosis = detail.diagnosis;
 
   // fallback：公开分享页
   const workTypeMatch = finalUrl.match(/\/(video|note|slides)\//);
@@ -454,5 +461,5 @@ export async function extractDouyin(
   const resp = await fetch(shareUrl, { headers: { "User-Agent": MOBILE_UA } });
   if (!resp.ok) throw new DouyinError("抖音公开分享页访问失败");
   const html = await resp.text();
-  return { info: parseRouterData(html, url), cookieValid };
+  return { info: parseRouterData(html, url), cookieValid, diagnosis };
 }

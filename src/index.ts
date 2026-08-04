@@ -120,11 +120,13 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   // 分平台抓取
   let media: VideoInfo;
   let cookieValid: boolean | undefined;
+  let cookieDiagnosis: string | undefined;
   try {
     if (douyinUrl(validatedUrl)) {
       const dr = await extractDouyin(validatedUrl, env.DOUYIN_COOKIE ?? "");
       media = dr.info;
       cookieValid = dr.cookieValid;
+      cookieDiagnosis = dr.diagnosis;
     } else if (bilibiliUrl(validatedUrl)) {
       media = await extractBilibili(validatedUrl);
     } else if (kuaishouUrl(validatedUrl)) {
@@ -196,8 +198,8 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   const summary = downloadSummary(downloads);
   return json({
     success: true,
-    message: buildMessage(summary, cookieValid),
-    notification: buildNotification(summary, cookieValid),
+    message: buildMessage(summary, cookieValid, cookieDiagnosis),
+    notification: buildNotification(summary, cookieValid, cookieDiagnosis),
     source_url: validatedUrl,
     media,
     downloads,
@@ -206,21 +208,21 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
   } satisfies PublicParseResponse);
 }
 
-/** cookie 无效时追加到 message；有效时不追加。 */
-function buildMessage(summary: string, cookieValid?: boolean): string {
+function buildMessage(summary: string, cookieValid?: boolean, diagnosis?: string): string {
   if (cookieValid === false) {
-    return `${summary}（抖音 Cookie 已失效，请更新环境变量 DOUYIN_COOKIE）`;
+    const extra = diagnosis ? ` [${diagnosis}]` : "";
+    return `${summary}（抖音 Cookie 已失效${extra}，请更新环境变量 DOUYIN_COOKIE）`;
   }
   return summary;
 }
 
-/** notification 始终带上 cookie 状态。 */
-function buildNotification(summary: string, cookieValid?: boolean): string {
+function buildNotification(summary: string, cookieValid?: boolean, diagnosis?: string): string {
   if (cookieValid === true) {
     return `${summary} · Cookie 有效`;
   }
   if (cookieValid === false) {
-    return `${summary} · 抖音 Cookie 已失效，请更新环境变量 DOUYIN_COOKIE`;
+    const extra = diagnosis ? ` [${diagnosis}]` : "";
+    return `${summary} · 抖音 Cookie 已失效${extra}，请更新环境变量 DOUYIN_COOKIE`;
   }
   return summary;
 }
