@@ -68,8 +68,10 @@ function kuaishouUrl(url: string): boolean {
 async function handleShortcutParse(request: Request, env: Env): Promise<Response> {
   // API Key 校验
   const expectedKey = env.PUBLIC_API_KEY;
+  console.log("[Auth] PUBLIC_API_KEY configured:", expectedKey ? `yes(len=${expectedKey.length})` : "no");
   if (expectedKey) {
     const provided = request.headers.get("X-API-Key");
+    console.log("[Auth] X-API-Key header:", provided ? `present(len=${provided.length})` : "missing");
     if (provided !== expectedKey) {
       return errorResponse(401, "API Key 无效或缺失");
     }
