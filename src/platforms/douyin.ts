@@ -181,29 +181,84 @@ async function fetchDetail(
   }
   const item = data?.aweme_detail;
   if (typeof item !== "object" || item === null) return null;
+
+  // 1) 图文/实况：走 assets 提取
   const assets = extractDetailAssets(item);
-  if (assets.length === 0 || !assets.some((a) => a.kind === "video")) return null;
-  const firstImage = assets.find((a) => a.kind === "image")?.url ?? null;
-  return {
-    id: String(item.aweme_id ?? awemeId),
-    title: item.desc || "抖音图文作品",
-    uploader: item.author?.nickname ?? null,
-    duration: null,
-    thumbnail: firstImage,
-    webpage_url: sourceUrl,
-    media_type: "gallery",
-    assets,
-    formats: [
-      {
-        id: "gallery",
-        label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片 · ${assets.filter((a) => a.kind === "video").length} 个实况视频`,
-        ext: "zip",
-        height: null,
-        filesize: null,
-        has_audio: false,
-      },
-    ],
-  };
+  if (assets.length > 0 && assets.some((a) => a.kind === "video")) {
+    const firstImage = assets.find((a) => a.kind === "image")?.url ?? null;
+    return {
+      id: String(item.aweme_id ?? awemeId),
+      title: item.desc || "抖音图文作品",
+      uploader: item.author?.nickname ?? null,
+      duration: null,
+      thumbnail: firstImage,
+      webpage_url: sourceUrl,
+      media_type: "gallery",
+      assets,
+      formats: [
+        {
+          id: "gallery",
+          label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片 · ${assets.filter((a) => a.kind === "video").length} 个实况视频`,
+          ext: "zip",
+          height: null,
+          filesize: null,
+          has_audio: false,
+        },
+      ],
+    };
+  }
+
+  // 2) 普通视频：从 video.play_addr 提取最高画质（url_list 最后一个是无水印高清）
+  const video = item.video;
+  if (typeof video === "object" && video !== null) {
+    const playAddr = video.play_addr;
+    if (playAddr && Array.isArray(playAddr.url_list) && playAddr.url_list.length > 0) {
+      // url_list[0] 通常是低画质，最后一个最高画质
+      let downloadUrl = playAddr.url_list[playAddr.url_list.length - 1];
+      downloadUrl = normalizeVideoUrl(downloadUrl);
+
+      // 封面：优先 origin_cover（无水印），再 cover
+      const originCover = video.origin_cover;
+      const thumb = Array.isArray(originCover?.url_list) && originCover.url_list.length > 0
+        ? originCover.url_list[originCover.url_list.length - 1]
+        : null;
+      const cover = video.cover;
+      const thumb2 = Array.isArray(cover?.url_list) && cover.url_list.length > 0
+        ? cover.url_list[cover.url_list.length - 1]
+        : null;
+      const thumbnail = thumb ?? thumb2;
+
+      const durationMs = video.duration;
+      const duration = typeof durationMs === "number" ? durationMs / 1000 : null;
+      const height = typeof video.height === "number" ? video.height : null;
+      const width = typeof video.width === "number" ? video.width : null;
+      const quality = width && height ? `${width}×${height}` : "最佳画质";
+
+      return {
+        id: String(item.aweme_id ?? awemeId),
+        title: item.desc || "抖音视频",
+        uploader: item.author?.nickname ?? null,
+        duration,
+        thumbnail,
+        webpage_url: sourceUrl,
+        download_url: downloadUrl,
+        media_type: "video",
+        assets: [],
+        formats: [
+          {
+            id: "detail_hd",
+            label: `${quality} · MP4 · 无水印高清`,
+            ext: "mp4",
+            height,
+            filesize: null,
+            has_audio: true,
+          },
+        ],
+      };
+    }
+  }
+
+  return null;
 }
 
 function parseRouterData(html: string, sourceUrl: string): VideoInfo {
