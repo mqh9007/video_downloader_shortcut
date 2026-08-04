@@ -198,8 +198,14 @@ async function fetchDetail(
   if (!cookieValid) {
     // 诊断信息：把 status_code 和 aweme_detail 存在性带出去，便于排查
     const reason = !statusOk
-      ? `status_code=${data?.status_code ?? "?"}`
+      ? `status_code=${data?.status_code ?? "?"} msg=${data?.desc ?? "?"}`
       : `aweme_detail=${hasDetail ? "present" : "missing"}`;
+    console.log("[Douyin] Detail API response:", JSON.stringify({
+      status_code: data?.status_code,
+      desc: data?.desc,
+      hasDetail,
+      cookieLen: cookie.length,
+    }));
     return { info: null, cookieValid: false, diagnosis: reason };
   }
 
