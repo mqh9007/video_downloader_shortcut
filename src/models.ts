@@ -40,6 +40,18 @@ export type PublicDownloadItem = {
 
 export type PublicParseResponse = {
   success: boolean;
+  /**
+   * 业务状态码，快捷指令据此判断结果并发送通知：
+   *   0   成功（高清，Cookie 有效）
+   *   1   成功（标清，Cookie 未配置）
+   *   2   成功（标清，Cookie 已失效）
+   *   3   成功（标清，Cookie 诊断异常）
+   *   100 请求参数错误（缺少 text / URL）
+   *   101 不支持的平台
+   *   200 解析失败（平台 API 返回错误）
+   *   401 API Key 无效或缺失
+   */
+  code: number;
   message: string;
   notification: string;
   source_url: string | null;

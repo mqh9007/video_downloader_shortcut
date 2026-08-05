@@ -38,6 +38,7 @@ function errorResponse(status: number, message: string): Response {
   return json(
     {
       success: false,
+      code: status,
       message,
       notification: message,
       error: message,
@@ -137,12 +138,27 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     } else if (kuaishouUrl(validatedUrl)) {
       media = await extractKuaishou(validatedUrl);
     } else {
-      return errorResponse(400, "目前只支持抖音、Bilibili、快手的分享链接");
+      return json(
+        {
+          success: false,
+          code: 101,
+          message: "目前只支持抖音、Bilibili、快手的分享链接",
+          notification: "目前只支持抖音、Bilibili、快手的分享链接",
+          error: "目前只支持抖音、Bilibili、快手的分享链接",
+          source_url: validatedUrl,
+          media: null,
+          downloads: [],
+          downloads_referer: null,
+          task_endpoint: null,
+        } satisfies PublicParseResponse,
+        400,
+      );
     }
   } catch (exc) {
     const msg = exc instanceof Error ? exc.message : "解析失败，请稍后重试";
     return json({
       success: false,
+      code: 200,
       message: msg,
       notification: msg,
       error: msg,
@@ -189,6 +205,7 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     const msg = "没有找到可直接保存到相册的媒体文件";
     return json({
       success: false,
+      code: 200,
       message: msg,
       notification: buildNotification(msg, cookieValid),
       error: msg,
@@ -200,9 +217,18 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     } satisfies PublicParseResponse);
   }
 
+  // 根据 cookie 状态决定 code
+  let code = 0;
+  if (cookieConfigured === false) {
+    code = 1;
+  } else if (cookieValid === false) {
+    code = cookieDiagnosis ? 3 : 2;
+  }
+
   const summary = downloadSummary(downloads);
   return json({
     success: true,
+    code,
     message: buildMessage(summary, cookieValid, cookieDiagnosis, cookieConfigured),
     notification: buildNotification(summary, cookieValid, cookieDiagnosis, cookieConfigured),
     source_url: validatedUrl,
