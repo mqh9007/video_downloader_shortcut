@@ -211,9 +211,10 @@ async function fetchDetail(
 
   const item = data.aweme_detail;
 
-  // 1) 图文/实况：走 assets 提取
-  const assets = extractDetailAssets(item);
-  if (assets.length > 0 && assets.some((a) => a.kind === "video")) {
+  // 1) 图文/实况：只要 images 数组存在且非空，就按 gallery 返回（不管有没有实况视频）
+  const images = itemImages(item);
+  if (Array.isArray(images) && images.length > 0) {
+    const assets = extractDetailAssets(item);
     const firstImage = assets.find((a) => a.kind === "image")?.url ?? null;
     return {
       info: {
@@ -228,7 +229,7 @@ async function fetchDetail(
         formats: [
           {
             id: "gallery",
-            label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片 · ${assets.filter((a) => a.kind === "video").length} 个实况视频`,
+            label: `图文合集 · ${assets.filter((a) => a.kind === "image").length} 张图片${assets.some((a) => a.kind === "video") ? ` · ${assets.filter((a) => a.kind === "video").length} 个实况视频` : ""}`,
             ext: "zip",
             height: null,
             filesize: null,
