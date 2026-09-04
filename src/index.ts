@@ -156,9 +156,17 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
     }
   } catch (exc) {
     const msg = exc instanceof Error ? exc.message : "解析失败，请稍后重试";
+    // 区分「需要更新 Cookie」和「作品本身不可用」，快捷指令据此给不同提示：
+    // 前者要用户去重新导出 Cookie，后者重试也没用。
+    let code = 200;
+    if (/Cookie/.test(msg)) {
+      code = 201;
+    } else if (/已删除|私密|被限制访问/.test(msg)) {
+      code = 202;
+    }
     return json({
       success: false,
-      code: 200,
+      code,
       message: msg,
       notification: msg,
       error: msg,

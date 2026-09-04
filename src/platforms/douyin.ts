@@ -14,6 +14,10 @@ const BROWSER_UA =
 const WORK_ID_PATTERN = /(?:\/share)?\/(?:video|note|slides)\/(\d+)/;
 const ROUTER_DATA_PATTERN = /<script>window\._ROUTER_DATA\s*=\s*(\{.*?\})<\/script>/s;
 
+/** Detail API 签名被随机拒绝时的重试次数 */
+const DETAIL_MAX_ATTEMPTS = 6;
+const DETAIL_RETRY_DELAY_MS = 400;
+
 class DouyinError extends Error {}
 
 function firstUrl(value: unknown): string | null {
@@ -105,7 +109,17 @@ function extractVideoDownload(value: unknown): string | null {
   return liveVideoUrl(value, true);
 }
 
-function detailApiUrl(awemeId: string): string {
+/** 从 Cookie 串里取出指定字段的值。 */
+function cookieValue(cookie: string, name: string): string {
+  for (const part of cookie.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq <= 0) continue;
+    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
+  }
+  return "";
+}
+
+function detailApiUrl(awemeId: string, uifid: string): string {
   const params: Record<string, string> = {
     device_platform: "webapp",
     aid: "6383",
@@ -136,7 +150,9 @@ function detailApiUrl(awemeId: string): string {
     downlink: "10",
     effective_type: "4g",
     round_trip_time: "200",
-    uifid: "",
+    // uifid 必填：2026-06 起抖音 ArgusSecurityPlugin 会拒绝空 uifid 的请求
+    // （返回 403 "Blocked by ArgusSecurityPlugin Uifid Not Found"），值取自 Cookie。
+    uifid,
     msToken: "",
   };
   const qs = new URLSearchParams(params).toString();
@@ -167,25 +183,72 @@ interface DetailResult {
   diagnosis?: string;
 }
 
-async function fetchDetail(
+/**
+ * 请求 Detail API。a_bogus 每次带随机量，抖音的签名校验会随机拒绝一部分请求
+ * （403 "Signature Not Found"），因此失败时重新签名重试。
+ */
+async function callDetailApi(
   awemeId: string,
-  sourceUrl: string,
   cookie: string,
-): Promise<DetailResult> {
-  if (!cookie) return { info: null };
+  uifid: string,
+): Promise<{ data?: any; blockedBy?: string }> {
   const headers: HeadersInit = {
     Accept: "*/*",
     "User-Agent": BROWSER_UA,
     Referer: "https://www.douyin.com/?recommend=1",
     Cookie: cookie,
   };
-  let data: any;
-  try {
-    const resp = await fetch(detailApiUrl(awemeId), { headers });
-    if (!resp.ok) return { info: null, cookieValid: false };
-    data = await resp.json();
-  } catch {
-    return { info: null, cookieValid: false };
+  let lastBlock = "";
+  for (let attempt = 0; attempt < DETAIL_MAX_ATTEMPTS; attempt++) {
+    let resp: Response;
+    try {
+      resp = await fetch(detailApiUrl(awemeId, uifid), { headers });
+    } catch (e) {
+      lastBlock = `fetch failed: ${e instanceof Error ? e.message : String(e)}`;
+      continue;
+    }
+    if (resp.ok) {
+      try {
+        return { data: await resp.json() };
+      } catch {
+        return { blockedBy: "响应不是合法 JSON" };
+      }
+    }
+    // 403 正文里带阻断原因，抓出来用于诊断
+    lastBlock = `HTTP ${resp.status}`;
+    try {
+      const body = (await resp.text()).trim();
+      if (body) lastBlock = `HTTP ${resp.status}: ${body.slice(0, 120)}`;
+    } catch {
+      // 忽略
+    }
+    // 只有签名类阻断值得重试；uifid 缺失/登录失效重试也没用
+    if (!/Signature Not Found/i.test(lastBlock)) break;
+    await new Promise((r) => setTimeout(r, DETAIL_RETRY_DELAY_MS));
+  }
+  return { blockedBy: lastBlock };
+}
+
+async function fetchDetail(
+  awemeId: string,
+  sourceUrl: string,
+  cookie: string,
+): Promise<DetailResult> {
+  if (!cookie) return { info: null };
+
+  const uifid = cookieValue(cookie, "UIFID") || cookieValue(cookie, "UIFID_TEMP");
+  if (!uifid) {
+    return {
+      info: null,
+      cookieValid: false,
+      diagnosis: "Cookie 缺少 UIFID 字段，抖音会直接拒绝请求，请重新导出完整 Cookie",
+    };
+  }
+
+  const { data, blockedBy } = await callDetailApi(awemeId, cookie, uifid);
+  if (!data) {
+    console.log("[Douyin] Detail API blocked:", blockedBy);
+    return { info: null, cookieValid: false, diagnosis: blockedBy };
   }
 
   // 检测 cookie 是否有效：
@@ -196,10 +259,17 @@ async function fetchDetail(
   const cookieValid = statusOk && hasDetail;
 
   if (!cookieValid) {
-    // 诊断信息：把 status_code 和 aweme_detail 存在性带出去，便于排查
-    const reason = !statusOk
-      ? `status_code=${data?.status_code ?? "?"} msg=${data?.desc ?? "?"}`
-      : `aweme_detail=${hasDetail ? "present" : "missing"}`;
+    // status_code 为 0 但 aweme_detail 为空：作品被过滤/已删除/不存在，
+    // 这不是 cookie 的问题，filter_detail.filter_reason 会给出原因。
+    if (statusOk) {
+      const reason = data?.filter_detail?.filter_reason ?? "unknown";
+      const notice = data?.filter_detail?.notice || data?.filter_detail?.detail_msg || "";
+      console.log("[Douyin] aweme filtered:", JSON.stringify(data?.filter_detail));
+      throw new DouyinError(
+        `抖音未返回该作品数据（可能已删除、私密或被限制访问）${notice ? `：${notice}` : `，filter_reason=${reason}`}`,
+      );
+    }
+    const reason = `status_code=${data?.status_code ?? "?"} msg=${data?.desc ?? "?"}`;
     console.log("[Douyin] Detail API response:", JSON.stringify({
       status_code: data?.status_code,
       desc: data?.desc,
@@ -356,7 +426,9 @@ function parseRouterData(html: string, sourceUrl: string): VideoInfo {
     ) as any;
     item = pageData.videoInfoRes.item_list[0];
   } catch {
-    throw new DouyinError("无法读取抖音公开分享页中的作品数据");
+    // 2026 年起抖音移除了分享页的 SSR 作品数据（loaderData 里不再有 videoInfoRes），
+    // 改为纯客户端渲染，因此这条免 Cookie 的兜底路径已经不可用。
+    throw new DouyinError("抖音公开分享页已不再返回作品数据，必须依赖有效 Cookie");
   }
 
   const images = itemImages(item);
@@ -461,12 +533,47 @@ export async function extractDouyin(
   const cookieValid = detail.cookieValid;
   const diagnosis = detail.diagnosis;
 
-  // fallback：公开分享页
+  // fallback：公开分享页。注意抖音已移除分享页里的 SSR 作品数据，
+  // 这条路径基本只会抛错；保留它是为了兼容抖音可能的回滚。
   const workTypeMatch = finalUrl.match(/\/(video|note|slides)\//);
   const workType = workTypeMatch?.[1] === "slides" ? "note" : workTypeMatch?.[1] ?? "video";
   const shareUrl = `https://www.iesdouyin.com/share/${workType}/${videoId}/`;
-  const resp = await fetch(shareUrl, { headers: { "User-Agent": MOBILE_UA } });
-  if (!resp.ok) throw new DouyinError("抖音公开分享页访问失败");
-  const html = await resp.text();
-  return { info: parseRouterData(html, url), cookieValid, diagnosis };
+  let html: string;
+  try {
+    const resp = await fetch(shareUrl, { headers: { "User-Agent": MOBILE_UA } });
+    if (!resp.ok) throw new DouyinError("抖音公开分享页访问失败");
+    html = await resp.text();
+  } catch (e) {
+    throw fallbackError(e, cookie, cookieValid, diagnosis);
+  }
+  try {
+    return { info: parseRouterData(html, url), cookieValid, diagnosis };
+  } catch (e) {
+    throw fallbackError(e, cookie, cookieValid, diagnosis);
+  }
+}
+
+/**
+ * 分享页兜底失败时，真正该报的是 Cookie 的问题——分享页早就不返回数据了，
+ * 报“分享页读不到数据”只会把人往错的方向带。
+ */
+function fallbackError(
+  fallbackErr: unknown,
+  cookie: string,
+  cookieValid?: boolean,
+  diagnosis?: string,
+): DouyinError {
+  if (!cookie) {
+    return new DouyinError(
+      "抖音解析需要有效 Cookie：公开分享页已不再返回作品数据，请配置 DOUYIN_COOKIE",
+    );
+  }
+  if (cookieValid === false) {
+    return new DouyinError(
+      `抖音 Cookie 已失效或被拦截，请重新导出 Cookie${diagnosis ? `（${diagnosis}）` : ""}`,
+    );
+  }
+  return fallbackErr instanceof DouyinError
+    ? fallbackErr
+    : new DouyinError(fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr));
 }
