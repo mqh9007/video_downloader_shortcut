@@ -91,20 +91,12 @@ npm install
 # 必须设置：用于响应里的 task_endpoint 字段（纯信息性，不改也没关系）
 npx wrangler secret put PUBLIC_BASE_URL
 
-# 敏感配置必须使用 Secret（不会写入 wrangler.toml）
+# 可选
 npx wrangler secret put PUBLIC_API_KEY
 npx wrangler secret put DOUYIN_COOKIE        # 抖音解析必需，见下方说明
 npx wrangler secret put PROXY_DOWNLOADS       # true = 视频流经 Worker
 
 npx wrangler deploy
-```
-
-`PUBLIC_API_KEY` 和 `DOUYIN_COOKIE` 只通过 `wrangler secret put` 注入，禁止填入
-`wrangler.toml` 的 `[vars]`。本地开发时可写入 `.dev.vars`（该文件已被 Git 忽略），例如：
-
-```dotenv
-PUBLIC_API_KEY=你的本地测试密钥
-DOUYIN_COOKIE=你的抖音Cookie
 ```
 
 ## 抖音 Cookie（必需）
