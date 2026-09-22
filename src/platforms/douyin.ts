@@ -4,6 +4,7 @@
  */
 
 import { signUrl } from "../a_bogus";
+import { signWebQuery } from "../a_bogus/websign";
 import type { MediaAsset, VideoInfo } from "../models";
 
 const MOBILE_UA =
@@ -157,7 +158,8 @@ function detailApiUrl(awemeId: string, uifid: string): string {
   };
   const qs = new URLSearchParams(params).toString();
   const aBogus = signUrl(qs, BROWSER_UA);
-  return `https://www.douyin.com/aweme/v1/web/aweme/detail/?${qs}&a_bogus=${encodeURIComponent(aBogus)}`;
+  const signedQuery = signWebQuery(`${qs}&a_bogus=${encodeURIComponent(aBogus)}`, uifid);
+  return `https://www.douyin.com/aweme/v1/web/aweme/detail/?${signedQuery}`;
 }
 
 function extractDetailAssets(item: Record<string, unknown>): MediaAsset[] {
