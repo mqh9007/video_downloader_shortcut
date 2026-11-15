@@ -5,7 +5,7 @@
  * 适配原项目 backend/app/main.py 的 shortcut_parse + media_download。
  */
 
-import { validatePublicUrl, HTTPError } from "./security";
+import { extractUrl, validatePublicUrl, HTTPError } from "./security";
 import type {
   PublicParseResponse,
   PublicDownloadItem,
@@ -89,21 +89,15 @@ async function handleShortcutParse(request: Request, env: Env): Promise<Response
       shareText = parsed.text;
     }
   } catch {
-    // JSON 失败 → 尝试手工从原始文本提取 URL
-    const fallbackUrl =
-      rawBody.match(/https?:\/\/[^\s<>"']+/i)?.[0] ??
-      rawBody.match(/https?:\/\/[^\s]+/i)?.[0];
-    if (fallbackUrl) {
-      // 有链接：用去掉首尾非文本字符后的整段作为搜索文本
-      shareText = rawBody;
-    }
+    // 非 JSON 请求在下方使用同一套分享链接提取规则。
   }
 
-  // 3) 仍然没有：再试一次更宽松的 URL 提取
+  // 3) 没有 text 字段时，尝试直接解析原始文本。
   if (!shareText) {
-    const looseUrl = rawBody.match(/https?:\/\/[^\s]+/i)?.[0];
-    if (looseUrl) {
-      shareText = rawBody;
+    try {
+      shareText = extractUrl(rawBody);
+    } catch (exc) {
+      if (!(exc instanceof HTTPError)) throw exc;
     }
   }
 

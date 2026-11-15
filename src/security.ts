@@ -19,7 +19,7 @@ export class HTTPError extends Error {
 }
 
 export function extractUrl(value: string): string {
-  const match = URL_PATTERN.exec(value.trim());
+  const match = URL_PATTERN.exec(value.replace(/(https?)\\:(?=\/\/)/gi, "$1:"));
   if (!match) {
     throw new HTTPError(400, '没有找到有效的视频链接');
   }
